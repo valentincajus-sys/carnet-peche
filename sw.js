@@ -1,5 +1,5 @@
 /* Hors-ligne : réseau d'abord (pour avoir la dernière version), cache en secours au bord de l'eau. */
-const CACHE = 'peche-v4';
+const CACHE = 'peche-v5';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'data.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
   'vendor/sb-admin-2/sb-admin-2.min.css', 'vendor/fontawesome/css/all.min.css', 'vendor/fontawesome/webfonts/fa-solid-900.woff2',

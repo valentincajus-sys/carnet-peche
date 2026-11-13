@@ -674,19 +674,54 @@ const trackPopup = s => `<div class="font-weight-bold text-gray-800">${esc(s.spo
 function viewCarte() {
   const f = ui.map, cs = mapCatches(), m = counts('spot');
   const onMap = cs.filter(c => catchPos(c)), todo = [...m.keys()].filter(n => !db.spots[n]).length;
-  const nf_ = [f.poisson, f.year, f.period, f.session].filter(Boolean).length;
+  const nf_ = [f.poisson, f.year, f.period].filter(Boolean).length;
   const sess = f.session && db.sessions.find(s => s.id === f.session);
-  return `${pageHeading('Carte des prises', `${sum(onMap, c => c.nbre)} poisson${sum(onMap, c => c.nbre) > 1 ? 's' : ''} sur la carte · ${cs.length - onMap.length} ligne${cs.length - onMap.length > 1 ? 's' : ''} sans position${sess ? ` · session du ${fmtD(sess.date, D_SHORT)}` : ''}`,
-      `<div class="d-flex flex-wrap" style="gap:.5rem"><button type="button" class="btn btn-sm ${nf_ ? 'btn-primary' : 'btn-light'} shadow-sm" data-cmd="map-filters">${fa('filter', 'fa-sm mr-1')}Filtres${nf_ ? ` (${nf_})` : ''}</button>
-       <button type="button" class="btn btn-sm ${todo ? 'btn-warning' : 'btn-light'} shadow-sm" data-cmd="spots">${fa('map-marker-alt', 'fa-sm mr-1')}Spots${todo ? ` · ${todo} à placer` : ''}</button></div>`)}
-    <div class="card shadow mb-2 overflow-hidden"><div id="bigmap" class="big-map"></div></div>
-    <div class="map-legend small text-gray-600 mb-4"><span><span class="mk-catch d-inline-block"></span> Prise (GPS)</span><span><span class="mk-catch approx d-inline-block"></span> Prise (position du spot)</span>
-      <span class="text-success">${fa('map-marker-alt')} Spot</span><span><span class="lg-line" style="background:#f6c23e"></span> Tracé</span><span><span class="mk-me d-inline-block" style="width:12px;height:12px"></span> Toi</span></div>`;
+  const fish = sum(onMap, c => c.nbre), off = cs.length - onMap.length;
+  const badge = (n, cls = '') => n ? `<span class="map-badge ${cls}">${n}</span>` : '';
+  return `<div class="map-page">
+    <div id="bigmap"></div>
+    <div class="map-top">
+      <button type="button" class="map-btn" data-cmd="map-layers" aria-label="Affichage de la carte">${fa('layer-group')}<span>Affichage</span></button>
+      <button type="button" class="map-btn${nf_ ? ' active' : ''}" data-cmd="map-filters" aria-label="Filtres">${fa('filter')}<span>Filtres</span>${badge(nf_, 'light')}</button>
+      <button type="button" class="map-btn" data-cmd="spots" aria-label="Spots">${fa('map-marker-alt', 'text-success')}<span>Spots</span>${badge(todo, 'warn')}</button>
+    </div>
+    <div class="map-info">
+      ${sess ? `<div class="map-chip active">${fa('stopwatch')}<span>Session du ${fmtD(sess.date, D_SHORT)} · ${esc(sess.spot || '')}</span><button type="button" data-cmd="map-clear-session" aria-label="Retirer le filtre session">${fa('times')}</button></div>` : ''}
+      <div class="map-chip">${fa('fish', 'text-primary')}<span><b>${nf(fish)}</b> poisson${fish > 1 ? 's' : ''} sur la carte${off ? ` · ${off} sans position` : ''}</span></div>
+    </div>
+    <div class="map-fabs">
+      <button type="button" class="map-fab" data-map-fit aria-label="Voir toutes les prises" title="Voir toutes les prises">${fa('expand-arrows-alt')}</button>
+      <button type="button" class="map-fab primary" data-map-follow aria-label="Me suivre" title="Me suivre">${fa('location-arrow')}</button>
+    </div>
+  </div>`;
+}
+const LAYERS = [
+  ['Prises', 'Chaque prise, regroupées quand elles sont proches', '<span class="mk-catch d-inline-block"></span>'],
+  ['Carte de chaleur', 'Les zones où tu prends le plus', `<i class="fas fa-fire" style="color:#e74a3b"></i>`],
+  ['Spots', 'Tes spots placés, avec leur fiche', `<i class="fas fa-map-marker-alt text-success"></i>`],
+  ['Tracés GPS', 'Ton parcours pendant les sessions', '<span class="lg-line" style="background:#f6c23e"></span>'],
+];
+function mapLayers() {
+  const f = ui.map;
+  sheet({
+    render: () => `${head('Affichage de la carte')}<div class="modal-body">
+      ${lbl('Fond de carte')}
+      <div class="base-pick">${[['Satellite', 'satellite', 'Photo aérienne'], ['Plan', 'map', 'Routes et noms']].map(([k, ic, d]) => `<button type="button" class="base-opt${f.base === k ? ' on' : ''}" data-act="base" data-val="${k}">${fa(ic)}<b>${k}</b><small>${d}</small></button>`).join('')}</div>
+      ${lbl('Calques')}
+      <div class="list-group">${LAYERS.map(([k, d, ic], i) => `<label class="list-group-item d-flex align-items-center mb-0 layer-row" style="gap:.85rem;cursor:pointer">
+        <span class="layer-ic">${ic}</span><span class="flex-fill"><b class="text-gray-800 d-block">${k}</b><small class="text-gray-500">${d}</small></span>
+        <span class="custom-control custom-switch"><input type="checkbox" class="custom-control-input" id="ly${i}" data-layer="${k}"${f.layers[k] ? ' checked' : ''}><span class="custom-control-label" for="ly${i}"></span></span></label>`).join('')}</div>
+      <div class="map-legend small text-gray-600 mt-3"><span><span class="mk-catch d-inline-block"></span> Position GPS</span><span><span class="mk-catch approx d-inline-block"></span> Position du spot</span><span><span class="mk-me d-inline-block" style="width:12px;height:12px"></span> Toi</span></div>
+      </div>`,
+    input: t => { if (t.dataset.layer) { f.layers[t.dataset.layer] = t.checked; render(); } },
+    on: { base: (t, api) => { f.base = t.dataset.val; api.refresh(); render(); } },
+  });
 }
 function initCarte() {
   const el = $('#bigmap'); if (!el || !window.L) return;
   const f = ui.map;
-  const { map, bases } = newMap(el);
+  const { map } = newMap(el, { zoomControl: false });
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
   const bounds = [];
   const cluster = L.markerClusterGroup({
     showCoverageOnHover: false, maxClusterRadius: 45, spiderfyOnMaxZoom: true,
@@ -718,29 +753,17 @@ function initCarte() {
   }
   const overlays = { Prises: cluster, 'Carte de chaleur': heat, Spots: spots, 'Tracés GPS': tracks };
   for (const [k, lay] of Object.entries(overlays)) if (f.layers[k]) lay.addTo(map);
-  L.control.layers(bases, overlays, { position: 'topright' }).addTo(map);
-  map.on('overlayadd', e => { f.layers[e.name] = true; });
-  map.on('overlayremove', e => { f.layers[e.name] = false; });
-  L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
 
-  // Bouton « me suivre »
-  let locBtn;
-  const Loc = L.Control.extend({
-    options: { position: 'topleft' },
-    onAdd() {
-      const d = L.DomUtil.create('div', 'leaflet-bar map-ctl');
-      d.innerHTML = `<a href="#" role="button" title="Me suivre" aria-label="Me suivre" class="${f.follow ? 'on' : ''}">${fa('location-arrow')}</a>`;
-      locBtn = d.firstChild;
-      L.DomEvent.disableClickPropagation(d);
-      L.DomEvent.on(locBtn, 'click', e => {
-        L.DomEvent.preventDefault(e); f.follow = !f.follow; locBtn.classList.toggle('on', f.follow);
-        if (f.follow) { if (gps.pos) map.setView([gps.pos.lat, gps.pos.lng], Math.max(map.getZoom(), 17)); else toast(gps.err || 'Recherche de ta position…'); }
-      });
-      return d;
-    },
+  // Boutons flottants : me suivre, tout voir
+  const followBtn = $('[data-map-follow]'), fitBtn = $('[data-map-fit]');
+  const setFollow = on => { f.follow = on; followBtn?.classList.toggle('on', on); };
+  setFollow(f.follow);
+  followBtn?.addEventListener('click', () => {
+    setFollow(!f.follow);
+    if (f.follow) { if (gps.pos) map.setView([gps.pos.lat, gps.pos.lng], Math.max(map.getZoom(), 17)); else toast(gps.err || 'Recherche de ta position…'); }
   });
-  new Loc().addTo(map);
-  map.on('dragstart', () => { if (f.follow) { f.follow = false; locBtn?.classList.remove('on'); } });
+  fitBtn?.addEventListener('click', () => { setFollow(false); if (bounds.length) map.fitBounds(bounds, { padding: [60, 60], maxZoom: 16 }); else toast('Aucune prise placée sur la carte pour l’instant'); });
+  map.on('dragstart', () => { if (f.follow) setFollow(false); });
 
   // Position en direct + tracé de la session en cours
   let me = null, accC = null, liveLine = null;
@@ -1146,6 +1169,7 @@ let lastRoute = null;
 function render() {
   const h = location.hash.replace(/^#\/?/, ''), [page, arg] = h.split('/');
   const tab = { '': 'home', prises: 'prises', sessions: 'sessions', session: 'sessions', stats: 'stats', reglages: 'reglages', carte: 'carte', spot: 'carte' }[page] || 'home';
+  document.body.classList.toggle('page-carte', page === 'carte');
   cleanups.forEach(fn => fn()); cleanups = [];
   liveMaps.forEach(m => m.remove()); liveMaps = []; afterRender = [];
   if (dt) { dt.destroy(); dt = null; }
@@ -1192,6 +1216,8 @@ const CMD = {
   'session-catch': t => { const s = db.sessions.find(x => x.id === t.dataset.id); catchSheet(null, { sessionId: s.id, time: db.live === s.id ? nowHM() : s.debut }); },
   'live-inc': t => { const s = liveSession(); if (!s) return; s[t.dataset.key] = Math.max(0, (s[t.dataset.key] || 0) + +t.dataset.d); save(); render(); },
   'map-filters': () => mapFilters(),
+  'map-layers': () => mapLayers(),
+  'map-clear-session': () => { ui.map.session = ''; ui.map.view = null; render(); },
   spots: () => spotsSheet(),
   'place-spot': t => placeSpot(t.dataset.name),
   'spot-on-map': t => { ui.map.focus = t.dataset.name; ui.map.view = null; location.hash = '#/carte'; },
