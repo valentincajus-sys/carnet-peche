@@ -56,17 +56,17 @@ const liveSession = () => db.sessions.find(s => s.id === db.live) || null;
 
 /* ---------------- Listes de valeurs ---------------- */
 const FIELDS = {
-  poisson: { label: 'Poisson', src: [['catches', 'poisson']] },
-  technique: { label: 'Technique', src: [['catches', 'technique']] },
-  equipement: { label: 'Équipement', src: [['catches', 'equipement']] },
-  leurre: { label: 'Appât / Leurre', src: [['catches', 'leurre']] },
-  riviere: { label: "Cours d'eau", src: [['catches', 'riviere'], ['sessions', 'coursEau']] },
-  spot: { label: 'Spot', src: [['catches', 'spot'], ['sessions', 'spot']] },
-  commune: { label: 'Commune', src: [['sessions', 'commune']] },
-  departement: { label: 'Département', src: [['sessions', 'departement']] },
-  cible: { label: 'Poisson recherché', src: [['sessions', 'cible']] },
-  meteo: { label: 'Météo', src: [['sessions', 'meteo']] },
-  vent: { label: 'Vent', src: [['sessions', 'vent']] },
+  poisson: { label: 'Poisson', nw: 'Nouveau poisson', src: [['catches', 'poisson']] },
+  technique: { label: 'Technique', nw: 'Nouvelle technique', src: [['catches', 'technique']] },
+  equipement: { label: 'Équipement', nw: 'Nouvel équipement', src: [['catches', 'equipement']] },
+  leurre: { label: 'Appât / Leurre', nw: 'Nouvel appât / leurre', src: [['catches', 'leurre']] },
+  riviere: { label: "Cours d'eau", nw: "Nouveau cours d'eau", src: [['catches', 'riviere'], ['sessions', 'coursEau']] },
+  spot: { label: 'Spot', nw: 'Nouveau spot', src: [['catches', 'spot'], ['sessions', 'spot']] },
+  commune: { label: 'Commune', nw: 'Nouvelle commune', src: [['sessions', 'commune']] },
+  departement: { label: 'Département', nw: 'Nouveau département', src: [['sessions', 'departement']] },
+  cible: { label: 'Poisson recherché', nw: 'Nouveau poisson recherché', src: [['sessions', 'cible']] },
+  meteo: { label: 'Météo', nw: 'Nouvelle météo', src: [['sessions', 'meteo']] },
+  vent: { label: 'Vent', nw: 'Nouveau vent', src: [['sessions', 'vent']] },
 };
 function counts(field) {
   const m = new Map();
@@ -132,11 +132,37 @@ const foot = (label, extra = '') => `<div class="modal-footer">${extra}<button t
 const pickRow = (label, field, key, val) =>
   `<button type="button" class="list-group-item list-group-item-action pick" data-act="pick" data-field="${field}" data-key="${key}"><span>${label}</span><b class="${val ? '' : 'none'}">${esc(val) || 'Choisir'}</b>${fa('chevron-right')}</button>`;
 const chip = (key, v, on, label = esc(v)) => `<button type="button" class="btn rounded-pill chip ${on ? 'btn-primary' : 'btn-outline-primary'}" data-act="set" data-key="${key}" data-val="${esc(v)}">${label}</button>`;
+const newChip = (field, key) => `<button type="button" class="btn btn-light rounded-pill chip text-success font-weight-bold" data-act="new" data-field="${field}" data-key="${key}">${fa('plus', 'mr-1')}Nouveau</button>`;
+const normKey = v => String(v).normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
+/* Saisie d'une nouvelle valeur (nouveau spot, nouveau poisson, etc.). Une valeur déjà connue est réutilisée telle quelle. */
+function newValue(field, cb, initial = '') {
+  let v = initial;
+  const submit = api => {
+    let val = v.replace(/\s+/g, ' ').trim();
+    val = val.charAt(0).toUpperCase() + val.slice(1);
+    if (!val) return toast('Écris un nom');
+    const known = [...counts(field).keys()].find(x => normKey(x) === normKey(val));
+    api.close(); cb(known || val);
+    if (known) toast(`« ${known} » existe déjà : sélectionné`);
+  };
+  const api = sheet({
+    render: () => `${head(FIELDS[field].nw)}<div class="modal-body">
+      <label class="small font-weight-bold text-gray-600 mt-2" for="nv">Nom</label>
+      <input id="nv" type="text" class="form-control form-control-lg" data-nv value="${esc(v)}" autocomplete="off" autocapitalize="sentences" enterkeyhint="done" placeholder="${esc(FIELDS[field].label)}">
+      <p class="small text-gray-500 mt-2 mb-0">Il sera ajouté à la liste et proposé les prochaines fois.</p></div>
+      ${foot(`${fa('plus', 'mr-1')}Ajouter`)}`,
+    input: t => { if (t.matches('[data-nv]')) v = t.value; },
+    on: { save: (t, api) => submit(api) },
+  });
+  const inp = $('[data-nv]', api.el);
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submit(api); } });
+  inp.focus();
+}
 function chipList(key, field, val, max = 7, deco = v => esc(v)) {
   let list = options(field).slice(0, max).map(o => o.v);
   if (val && !list.includes(val)) list = [val, ...list.slice(0, max - 1)];
   return `<div class="chips">${list.map(v => chip(key, v, v === val, deco(v))).join('')}
-    <button type="button" class="btn btn-light rounded-pill chip text-primary" data-act="pick" data-field="${field}" data-key="${key}">Autre…</button></div>`;
+    ${newChip(field, key)}<button type="button" class="btn btn-light rounded-pill chip text-primary" data-act="pick" data-field="${field}" data-key="${key}">${fa('list', 'mr-1')}Tous…</button></div>`;
 }
 const stepper = (key, val, unit, cls = '', min = 0) =>
   `<div class="input-group stepper ${cls}"><div class="input-group-prepend"><button type="button" class="btn btn-outline-primary" data-act="step" data-key="${key}" data-d="-1" data-min="${min}" aria-label="Moins">−</button></div>
@@ -157,10 +183,12 @@ function picker(field, current, cb) {
   sheet({
     render: () => `${head(FIELDS[field].label)}<div class="modal-body">
       <div class="input-group mb-3"><div class="input-group-prepend"><span class="input-group-text bg-light border-0">${fa('search', 'fa-sm')}</span></div>
-      <input type="search" class="form-control bg-light border-0" placeholder="Rechercher ou créer…" data-q autocomplete="off" autocapitalize="sentences"></div>
+      <input type="search" class="form-control bg-light border-0" placeholder="Rechercher…" data-q autocomplete="off" autocapitalize="sentences"></div>
+      <button type="button" class="btn btn-success btn-block mb-3" data-act="new">${fa('plus', 'mr-1')}${esc(FIELDS[field].nw)}</button>
       <div data-list>${list()}</div></div>`,
     input: (t, api) => { if (t.matches('[data-q]')) { q = t.value; $('[data-list]', api.el).innerHTML = list(); } },
     on: {
+      new: (t, api) => { api.close(); newValue(field, cb, q.trim()); },
       choose: (t, api) => { api.close(); cb(t.dataset.val); },
       create: (t, api) => { api.close(); cb(q.trim()); },
     },
@@ -182,6 +210,12 @@ function catchSheet(orig, preset = {}) {
     sessionId: sess ? sess.id : undefined, ...preset,
   };
   let sizeTouched = !isNew;
+  const apply = (key, v, api) => {
+    f[key] = v;
+    if (key === 'poisson' && !sizeTouched) f.taille = typicalSize(v);
+    if (key === 'spot' && v) { const p = all.find(c => c.spot === v && c.riviere); if (p) f.riviere = p.riviere; }
+    api.refresh();
+  };
   if (isNew && f.taille == null) f.taille = typicalSize(f.poisson);
   const num = k => ['taille', 'nbre'].includes(k);
 
@@ -220,12 +254,8 @@ function catchSheet(orig, preset = {}) {
         if (k === 'taille') sizeTouched = true;
         $$(`[data-f="${k}"]`, api.el).forEach(el => { el.value = f[k]; });
       },
-      pick: (t, api) => picker(t.dataset.field, f[t.dataset.key], v => {
-        f[t.dataset.key] = v;
-        if (t.dataset.key === 'poisson' && !sizeTouched) f.taille = typicalSize(v);
-        if (t.dataset.key === 'spot' && v) { const p = all.find(c => c.spot === v && c.riviere); if (p) f.riviere = p.riviere; }
-        api.refresh();
-      }),
+      pick: (t, api) => picker(t.dataset.field, f[t.dataset.key], v => apply(t.dataset.key, v, api)),
+      new: (t, api) => newValue(t.dataset.field, v => apply(t.dataset.key, v, api)),
       save: (t, api) => {
         if (!f.poisson) return toast('Choisis un poisson');
         if (!f.date || !f.time) return toast('Date et heure requises');
@@ -260,6 +290,15 @@ function sessionSheet(orig, mode) { // mode : 'start' | 'edit' | 'end' | 'past'
   const numKeys = ['tAir', 'tEau', 'pris', 'rates', 'leurresPerdus'];
   const winds = [...COMPASS, ...options('vent').map(o => o.v).filter(v => !COMPASS.includes(v))];
   let busy = false;
+  const apply = (key, v, api) => {
+    f[key] = v;
+    if (key === 'spot' && v) { // un spot connu remplit le reste du lieu
+      const p = sorted('sessions').find(s => s.spot === v);
+      if (p) { f.coursEau = p.coursEau; f.commune = p.commune; f.departement = p.departement; }
+      else { const c = sorted('catches').find(x => x.spot === v && x.riviere); if (c) f.coursEau = c.riviere; }
+    }
+    api.refresh();
+  };
   const numIn = (k, l) => `<div class="col-4"><label class="small text-gray-600 mb-1 d-block text-truncate">${l}</label><input type="number" inputmode="numeric" min="0" class="form-control text-center font-weight-bold" data-f="${k}" value="${f[k] ?? 0}"></div>`;
 
   sheet({
@@ -275,7 +314,7 @@ function sessionSheet(orig, mode) { // mode : 'start' | 'edit' | 'end' | 'past'
           <div class="col-6">${lbl('T° eau')}${stepper('tEau', f.tEau, '°C', '', 0)}</div>
         </div>
         ${lbl('Vent')}
-        <div class="compass">${winds.map(v => chip('vent', v, f.vent === v, v === 'Sans' ? 'Sans vent' : esc(v))).join('')}</div>
+        <div class="compass">${winds.map(v => chip('vent', v, f.vent === v, v === 'Sans' ? 'Sans vent' : esc(v))).join('')}${newChip('vent', 'vent')}</div>
         ${lbl('Horaires')}
         <div class="form-row">
           <div class="col"><label class="small text-gray-600 mb-1">Date</label><input type="date" class="form-control" data-f="date" value="${f.date}"></div>
@@ -294,15 +333,8 @@ function sessionSheet(orig, mode) { // mode : 'start' | 'edit' | 'end' | 'past'
         f[k] = f[k] == null ? (k === 'tAir' ? last.tAir ?? 15 : last.tEau ?? 12) : Math.max(+t.dataset.min, f[k] + +t.dataset.d);
         $(`[data-f="${k}"]`, api.el).value = f[k];
       },
-      pick: (t, api) => picker(t.dataset.field, f[t.dataset.key], v => {
-        f[t.dataset.key] = v;
-        if (t.dataset.key === 'spot' && v) { // un spot connu remplit le reste du lieu
-          const p = sorted('sessions').find(s => s.spot === v);
-          if (p) { f.coursEau = p.coursEau; f.commune = p.commune; f.departement = p.departement; }
-          else { const c = sorted('catches').find(x => x.spot === v && x.riviere); if (c) f.coursEau = c.riviere; }
-        }
-        api.refresh();
-      }),
+      pick: (t, api) => picker(t.dataset.field, f[t.dataset.key], v => apply(t.dataset.key, v, api)),
+      new: (t, api) => newValue(t.dataset.field, v => apply(t.dataset.key, v, api)),
       auto: async (t, api) => {
         if (busy) return;
         busy = true; api.refresh();
