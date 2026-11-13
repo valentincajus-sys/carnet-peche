@@ -20,13 +20,13 @@ const PALETTE = ['#4e73df', '#1cc88a', '#36b9cc', '#f6c23e', '#e74a3b', '#858796
 /* ---------------- Stockage ---------------- */
 function freshDb() {
   const d = JSON.parse(JSON.stringify(window.SEED || { catches: [], sessions: [] }));
-  d.live = null; d.settings = {};
+  d.live = null; d.settings = {}; d.spots = {};
   return d;
 }
 function load() {
   try {
     const d = JSON.parse(localStorage.getItem(KEY));
-    if (d && Array.isArray(d.catches) && Array.isArray(d.sessions)) { d.settings = d.settings || {}; return d; }
+    if (d && Array.isArray(d.catches) && Array.isArray(d.sessions)) { d.settings = d.settings || {}; d.spots = d.spots || {}; return d; }
   } catch (e) { /* données illisibles : on repart de la base d'origine */ }
   return freshDb();
 }
@@ -218,8 +218,20 @@ function catchSheet(orig, preset = {}) {
   };
   if (isNew && f.taille == null) f.taille = typicalSize(f.poisson);
   const num = k => ['taille', 'nbre'].includes(k);
+  let posTouched = !isNew, spotTouched = !isNew || !!sess, locating = isNew, posErr = '';
+  const posBlock = () => {
+    const sp = spotPos(f.spot);
+    const txt = f.lat != null ? `${fa('map-marker-alt', 'text-primary mr-2')}<b>Position GPS</b> <span class="text-gray-500">${f.acc ? '±' + f.acc + ' m' : '(placée à la main)'}</span>`
+      : locating ? `${fa('spinner', 'fa-spin text-gray-400 mr-2')}Recherche de ta position GPS…`
+      : sp ? `${fa('map-marker-alt', 'text-success mr-2')}Position du spot « ${esc(f.spot)} »${posErr ? ` <span class="text-gray-500">(${esc(posErr)})</span>` : ''}`
+      : `${fa('map-marker-alt', 'text-gray-300 mr-2')}<span class="text-gray-500">${esc(posErr || 'Pas de position')}</span>`;
+    return `<div class="list-group-item d-flex align-items-center flex-wrap" style="gap:.5rem" data-pos><span class="flex-fill small">${txt}</span>
+      <button type="button" class="btn btn-sm btn-outline-primary" data-act="adjust">${fa('crosshairs', 'mr-1')}${f.lat != null ? 'Ajuster' : 'Placer'}</button>
+      ${f.lat != null ? `<button type="button" class="btn btn-sm btn-light" data-act="clearpos" aria-label="Effacer la position">${fa('times')}</button>` : ''}</div>`;
+  };
+  const updPos = () => { const el = $('[data-pos]', api.el); if (el) el.outerHTML = posBlock(); };
 
-  sheet({
+  const api = sheet({
     render: () => `${head(isNew ? 'Nouvelle prise' : 'Modifier la prise')}
       <div class="modal-body">
         ${lbl('Poisson')}${chipList('poisson', 'poisson', f.poisson, 7)}
@@ -232,7 +244,7 @@ function catchSheet(orig, preset = {}) {
         ${lbl('Montage')}
         <div class="list-group">${pickRow('Appât / Leurre', 'leurre', 'leurre', f.leurre)}${pickRow('Technique', 'technique', 'technique', f.technique)}${pickRow('Équipement', 'equipement', 'equipement', f.equipement)}</div>
         ${lbl('Lieu')}
-        <div class="list-group">${pickRow('Spot', 'spot', 'spot', f.spot)}${pickRow("Cours d'eau", 'riviere', 'riviere', f.riviere)}</div>
+        <div class="list-group">${pickRow('Spot', 'spot', 'spot', f.spot)}${pickRow("Cours d'eau", 'riviere', 'riviere', f.riviere)}${posBlock()}</div>
         ${lbl('Moment')}
         <div class="form-row"><div class="col"><input type="date" class="form-control" data-f="date" value="${f.date}" aria-label="Date"></div><div class="col"><input type="time" class="form-control" data-f="time" value="${f.time}" aria-label="Heure"></div></div>
         ${lbl('Note')}<textarea class="form-control" rows="2" data-f="note" placeholder="Facultatif">${esc(f.note || '')}</textarea>
@@ -254,8 +266,10 @@ function catchSheet(orig, preset = {}) {
         if (k === 'taille') sizeTouched = true;
         $$(`[data-f="${k}"]`, api.el).forEach(el => { el.value = f[k]; });
       },
-      pick: (t, api) => picker(t.dataset.field, f[t.dataset.key], v => apply(t.dataset.key, v, api)),
-      new: (t, api) => newValue(t.dataset.field, v => apply(t.dataset.key, v, api)),
+      pick: (t, api) => picker(t.dataset.field, f[t.dataset.key], v => { if (t.dataset.key === 'spot') spotTouched = true; apply(t.dataset.key, v, api); }),
+      new: (t, api) => newValue(t.dataset.field, v => { if (t.dataset.key === 'spot') spotTouched = true; apply(t.dataset.key, v, api); }),
+      adjust: () => pickLocation({ title: 'Position de la prise', start: f.lat != null ? [f.lat, f.lng] : spotPos(f.spot), cb: p => { [f.lat, f.lng] = p; f.acc = null; posTouched = true; locating = false; updPos(); } }),
+      clearpos: () => { delete f.lat; delete f.lng; delete f.acc; posTouched = true; locating = false; updPos(); },
       save: (t, api) => {
         if (!f.poisson) return toast('Choisis un poisson');
         if (!f.date || !f.time) return toast('Date et heure requises');
@@ -263,8 +277,11 @@ function catchSheet(orig, preset = {}) {
         const s = db.sessions.find(x => x.id === f.sessionId);
         if (isNew) { db.catches.push(f); if (s) s.pris = (s.pris || 0) + f.nbre; }
         else { if (s) s.pris = Math.max(0, (s.pris || 0) + f.nbre - (orig.nbre || 1)); db.catches[db.catches.findIndex(c => c.id === f.id)] = f; }
+        if (f.acc === null) delete f.acc;
+        let placed = false;
+        if (f.lat != null && f.spot && !db.spots[f.spot]) { db.spots[f.spot] = { lat: f.lat, lng: f.lng }; placed = true; }
         save(); api.close(); render();
-        toast(isNew ? `${f.poisson}${f.taille ? ' de ' + f.taille + ' cm' : ''} enregistré` : 'Prise modifiée');
+        toast((isNew ? `${f.poisson}${f.taille ? ' de ' + f.taille + ' cm' : ''} enregistré` : 'Prise modifiée') + (placed ? ` · spot « ${f.spot} » placé sur la carte` : ''));
       },
       del: (t, api) => {
         if (!confirm('Supprimer définitivement cette prise ?')) return;
@@ -275,6 +292,13 @@ function catchSheet(orig, preset = {}) {
       },
     },
   });
+  if (isNew) gps.once().then(p => {
+    locating = false;
+    if (posTouched) return updPos();
+    f.lat = p.lat; f.lng = p.lng; f.acc = p.acc;
+    const n = !spotTouched && nearestSpot([p.lat, p.lng]);
+    if (n && n.n !== f.spot) { apply('spot', n.n, api); toast(`Spot le plus proche : ${n.n} (${fmtDist(n.d)})`); } else updPos();
+  }).catch(e => { locating = false; posErr = e.message; updPos(); });
 }
 
 /* ---------------- Saisie d'une session ---------------- */
@@ -437,6 +461,356 @@ const recRow = (c, i, extra = '') => `<button type="button" class="list-group-it
   <span class="font-weight-bold text-gray-400 num" style="width:1.4rem">${i + 1}</span><div style="min-width:0;flex:1"><div class="font-weight-bold text-gray-800">${esc(c.poisson)}</div>
   <div class="small text-gray-500 text-truncate">${fmtD(c.date, D_SHORT)}${c.spot ? ' · ' + esc(c.spot) : ''}${extra}</div></div><div class="size num">${c.taille}<small>cm</small></div></button>`;
 
+/* ---------------- Géolocalisation : GPS, suivi, tracé ---------------- */
+const DEFAULT_C = [45.68, -0.62];
+function dist(a, b) {
+  const t = Math.PI / 180, dLa = (b[0] - a[0]) * t, dLo = (b[1] - a[1]) * t;
+  const h = Math.sin(dLa / 2) ** 2 + Math.cos(a[0] * t) * Math.cos(b[0] * t) * Math.sin(dLo / 2) ** 2;
+  return 2 * 6371000 * Math.asin(Math.sqrt(h));
+}
+const fmtDist = m => m < 1000 ? Math.round(m) + ' m' : nf(m / 1000, 1) + ' km';
+const r6 = x => Math.round(x * 1e6) / 1e6;
+const spotPos = name => name && db.spots[name] ? [db.spots[name].lat, db.spots[name].lng] : null;
+const catchPos = c => c.lat != null ? [c.lat, c.lng] : spotPos(c.spot);
+const trackLL = tr => (tr || []).map(p => [p[0], p[1]]);
+const trackLen = tr => { let d = 0; for (let i = 1; i < (tr?.length || 0); i++) d += dist(tr[i - 1], tr[i]); return d; };
+const spotHref = n => '#/spot/' + encodeURIComponent(n);
+function nearestSpot(p, max = 400) {
+  let best = null;
+  for (const [n, v] of Object.entries(db.spots)) { const d = dist(p, [v.lat, v.lng]); if (d <= max && (!best || d < best.d)) best = { n, d }; }
+  return best;
+}
+
+const gps = {
+  pos: null, watchId: null, err: '', subs: new Set(),
+  fresh(ms = 60000) { return this.pos && Date.now() - this.pos.t < ms ? this.pos : null; },
+  start() {
+    if (this.watchId != null || !navigator.geolocation) return;
+    this.watchId = navigator.geolocation.watchPosition(p => this.update(p),
+      e => { this.err = e.code === 1 ? 'Position refusée (réglages de Safari)' : 'GPS indisponible'; this.emit(); },
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+  },
+  stop() { if (this.watchId != null) { navigator.geolocation.clearWatch(this.watchId); this.watchId = null; } },
+  update(p) {
+    this.err = '';
+    this.pos = { lat: r6(p.coords.latitude), lng: r6(p.coords.longitude), acc: Math.round(p.coords.accuracy), t: Date.now() };
+    recordTrack(this.pos); this.emit();
+  },
+  emit() { this.subs.forEach(f => { try { f(this.pos); } catch (e) { /* abonné détruit */ } }); },
+  once(timeout = 15000) {
+    return new Promise((ok, ko) => {
+      const f = this.fresh(20000);
+      if (f && f.acc <= 100) return ok(f);
+      if (!navigator.geolocation) return ko(new Error('Géolocalisation indisponible'));
+      navigator.geolocation.getCurrentPosition(p => { this.update(p); ok(this.pos); },
+        e => ko(new Error(e.code === 1 ? 'Position refusée (réglages de Safari)' : 'GPS indisponible')),
+        { enableHighAccuracy: true, timeout, maximumAge: 10000 });
+    });
+  },
+};
+/* Pendant une session, chaque déplacement de plus de 12 m (précision ≤ 40 m) prolonge le tracé. */
+let trackSaveT = 0;
+function recordTrack(p) {
+  const s = liveSession(); if (!s || p.acc > 40) return;
+  s.track = s.track || [];
+  const last = s.track[s.track.length - 1];
+  if (last && dist(last, [p.lat, p.lng]) < 12) return;
+  s.track.push([p.lat, p.lng, Math.round(p.t / 1000)]);
+  if (Date.now() - trackSaveT > 20000) { trackSaveT = Date.now(); save(); }
+}
+/* Le GPS reste allumé pendant une session ou sur la carte (page visible) ; l'écran reste allumé pendant une session. */
+function syncGps() {
+  const need = !document.hidden && (liveSession() || /^#\/carte/.test(location.hash));
+  if (need) gps.start(); else gps.stop();
+  wake(!document.hidden && !!liveSession());
+}
+let wakeLock = null;
+async function wake(on) {
+  try {
+    if (on && !wakeLock && navigator.wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); }
+    else if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch (e) { /* non pris en charge */ }
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden && liveSession()) save(); syncGps(); });
+const gpsLine = s => {
+  const p = gps.pos, tr = s?.track;
+  return `${fa('location-arrow', 'mr-1')}${gps.err ? gps.err : p ? 'GPS ±' + p.acc + ' m' : 'Recherche GPS…'}${tr?.length > 1 ? ' · tracé ' + fmtDist(trackLen(tr)) : ''}`;
+};
+gps.subs.add(() => { const s = liveSession(); $$('[data-gps]').forEach(el => { el.innerHTML = gpsLine(s); }); });
+
+/* ---------------- Cartes (Leaflet : satellite Esri + plan OpenStreetMap) ---------------- */
+let liveMaps = [], cleanups = [], afterRender = [];
+function baseLayers() {
+  const sat = L.layerGroup([
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, maxNativeZoom: 18, attribution: 'Imagerie © Esri, Maxar, Earthstar Geographics' }),
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 20, maxNativeZoom: 18 }),
+  ]);
+  const plan = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20, maxNativeZoom: 19, attribution: '© contributeurs OpenStreetMap' });
+  return { Satellite: sat, Plan: plan };
+}
+function newMap(el, opts = {}, keep = true) {
+  const map = L.map(el, { zoomControl: true, ...opts }).setView(DEFAULT_C, 11); // vue provisoire, ajustée ensuite
+  const bases = baseLayers();
+  (bases[ui.map.base] || bases.Satellite).addTo(map);
+  map.on('baselayerchange', e => { ui.map.base = e.name; });
+  if (keep) liveMaps.push(map);
+  setTimeout(() => map.invalidateSize(), 80);
+  return { map, bases };
+}
+const ICON = {};
+const icCatch = approx => ICON['c' + approx] || (ICON['c' + approx] = L.divIcon({ className: '', html: `<div class="mk-catch${approx ? ' approx' : ''}"></div>`, iconSize: [16, 16], iconAnchor: [8, 8], popupAnchor: [0, -8] }));
+const icSpot = () => ICON.s || (ICON.s = L.divIcon({ className: '', html: `<div class="mk-spot">${fa('map-marker-alt')}</div>`, iconSize: [28, 34], iconAnchor: [14, 32], popupAnchor: [0, -30] }));
+const icMe = () => ICON.m || (ICON.m = L.divIcon({ className: '', html: '<div class="mk-me"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }));
+const icDot = color => L.divIcon({ className: '', html: `<div class="mk-dot" style="background:${color}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] });
+const catchPopup = c => `<div class="font-weight-bold text-gray-800">${esc(c.poisson)}${c.taille ? ` · ${c.taille} cm` : ''}${c.nbre > 1 ? ` (× ${c.nbre})` : ''}</div>
+  <div class="text-gray-600">${fmtD(c.date, D_SHORT)} · ${c.time}</div><div>${esc(c.leurre)}</div>
+  <div class="text-gray-500 small">${c.lat != null ? 'Position GPS' : 'Position du spot'}${c.spot ? ' · ' + esc(c.spot) : ''}</div>
+  <div class="mt-2"><button type="button" class="btn btn-sm btn-primary" data-cmd="edit-catch" data-id="${c.id}">Modifier</button>${c.spot ? ` <a class="btn btn-sm btn-light" href="${spotHref(c.spot)}">Fiche du spot</a>` : ''}</div>`;
+function spotStats(name) {
+  const cs = db.catches.filter(c => c.spot === name), ss = db.sessions.filter(s => s.spot === name);
+  const big = cs.filter(c => c.taille).sort((a, b) => b.taille - a.taille)[0];
+  const riv = top(groupSum([...cs.map(c => c.riviere), ...ss.map(s => s.coursEau)], x => x), 1)[0]?.l || '';
+  const commune = top(groupSum(ss, s => s.commune), 1)[0]?.l || '';
+  return { cs, ss, fish: sum(cs, c => c.nbre), big, riv, commune };
+}
+const spotPopup = name => {
+  const st = spotStats(name);
+  return `<div class="font-weight-bold text-gray-800">${esc(name)}</div><div class="text-gray-600 small">${esc([st.riv, st.commune].filter(Boolean).join(' · '))}</div>
+    <div class="mt-1">${st.fish} poisson${st.fish > 1 ? 's' : ''} · ${st.ss.length} session${st.ss.length > 1 ? 's' : ''}${st.big ? `<br>Record : ${esc(st.big.poisson)} ${st.big.taille} cm` : ''}</div>
+    <div class="mt-2"><a class="btn btn-sm btn-primary" href="${spotHref(name)}">Fiche du spot</a> <button type="button" class="btn btn-sm btn-light" data-cmd="place-spot" data-name="${esc(name)}">Déplacer</button></div>`;
+};
+
+/* Choisir une position : la carte se déplace sous la cible centrale. */
+function pickLocation({ title, start, zoom, sub = '', cb }) {
+  let map;
+  const doSearch = async api => {
+    const q = $('[data-geo]', api.el).value.trim(), box = $('[data-georesults]', api.el);
+    if (!q) return;
+    box.innerHTML = '<div class="small text-gray-500 pt-2">Recherche…</div>';
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&accept-language=fr&countrycodes=fr&q=${encodeURIComponent(q)}`);
+      const js = await r.json();
+      box.innerHTML = js.length ? `<div class="list-group mt-2">${js.map(x => `<button type="button" class="list-group-item list-group-item-action py-2 small" data-act="goto" data-lat="${x.lat}" data-lng="${x.lon}">${esc(x.display_name)}</button>`).join('')}</div>` : '<div class="small text-gray-500 pt-2">Aucun résultat</div>';
+    } catch (e) { box.innerHTML = '<div class="small text-danger pt-2">Recherche indisponible (pas de réseau ?)</div>'; }
+  };
+  const api = sheet({
+    render: () => `${head(title)}<div class="modal-body p-0 d-flex flex-column">
+      <div class="p-2 border-bottom"><div class="input-group"><input type="search" class="form-control" placeholder="Aller à un lieu (commune, rivière…)" data-geo enterkeyhint="search" autocomplete="off">
+        <div class="input-group-append"><button type="button" class="btn btn-primary" data-act="geo" aria-label="Rechercher">${fa('search')}</button></div></div><div data-georesults></div></div>
+      <div class="pick-map-wrap"><div class="pick-map" data-map></div><div class="crosshair">${fa('crosshairs')}</div>
+        <button type="button" class="btn btn-light shadow map-me" data-act="me" aria-label="Ma position">${fa('location-arrow')}</button></div>
+      <div class="small text-gray-600 px-3 py-2">${sub || 'Déplace la carte pour placer la cible sur le bon endroit.'}</div></div>
+      ${foot(`${fa('check', 'mr-1')}Valider cette position`)}`,
+    on: {
+      geo: (t, api) => doSearch(api),
+      goto: (t, api) => { map.setView([+t.dataset.lat, +t.dataset.lng], 15); $('[data-georesults]', api.el).innerHTML = ''; },
+      me: async () => { try { const p = await gps.once(); map.setView([p.lat, p.lng], 18); } catch (e) { toast(e.message); } },
+      save: (t, api) => { const c = map.getCenter(); api.close(); setTimeout(() => map.remove(), 350); cb([r6(c.lat), r6(c.lng)]); },
+    },
+  });
+  $('[data-geo]', api.el).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearch(api); } });
+  const fresh = gps.fresh();
+  ({ map } = newMap($('[data-map]', api.el), {}, false));
+  map.setView(start || (fresh ? [fresh.lat, fresh.lng] : DEFAULT_C), zoom || (start || fresh ? 17 : 11));
+  setTimeout(() => map.invalidateSize(), 380);
+}
+function placeSpot(name, done) {
+  const st = spotStats(name);
+  let start = spotPos(name);
+  if (!start && st.riv) for (const n of Object.keys(db.spots)) if (spotStats(n).riv === st.riv) { start = spotPos(n); break; }
+  pickLocation({
+    title: `${spotPos(name) ? 'Déplacer' : 'Placer'} « ${name} »`, start, zoom: spotPos(name) ? 17 : start ? 14 : null,
+    sub: `${esc([st.riv, st.commune].filter(Boolean).join(' · ') || 'Spot')} — déplace la carte pour mettre la cible sur le spot.`,
+    cb: p => { db.spots[name] = { lat: p[0], lng: p[1] }; save(); toast(`« ${name} » placé sur la carte`); if (done) done(); else render(); },
+  });
+}
+function spotsSheet() {
+  const body = () => {
+    const m = counts('spot'), names = [...m.keys()];
+    const todo = names.filter(n => !db.spots[n]).sort((a, b) => m.get(b) - m.get(a));
+    const done = names.filter(n => db.spots[n]).sort((a, b) => a.localeCompare(b));
+    const row = (n, placed) => `<div class="list-group-item d-flex align-items-center" style="gap:.5rem">
+      <a href="${spotHref(n)}" data-act="close" class="flex-fill text-decoration-none" style="min-width:0"><div class="font-weight-bold text-gray-800 text-truncate">${esc(n)}</div>
+      <div class="small text-gray-500 text-truncate">${m.get(n)} entrée${m.get(n) > 1 ? 's' : ''}${spotStats(n).riv ? ' · ' + esc(spotStats(n).riv) : ''}</div></a>
+      <button type="button" class="btn btn-sm ${placed ? 'btn-light' : 'btn-success'}" data-act="place" data-name="${esc(n)}">${fa('crosshairs', 'mr-1')}${placed ? 'Déplacer' : 'Placer'}</button></div>`;
+    return `${todo.length ? `${lbl(`À placer (${todo.length})`)}<p class="small text-gray-600 mb-2">Place chaque spot une fois : toutes ses prises passées apparaîtront sur la carte. Les plus fréquentés sont en haut.</p>
+      <div class="list-group">${todo.map(n => row(n, false)).join('')}</div>` : '<div class="alert alert-success mt-2">Tous les spots sont placés.</div>'}
+      ${done.length ? `${lbl(`Placés (${done.length})`)}<div class="list-group">${done.map(n => row(n, true)).join('')}</div>` : ''}`;
+  };
+  const api = sheet({
+    render: () => `${head('Spots')}<div class="modal-body">${body()}</div>`,
+    on: { place: (t, api) => placeSpot(t.dataset.name, () => { api.refresh(); render(); }) },
+  });
+  return api;
+}
+function mapFilters() {
+  const f = ui.map;
+  const opt = (v, l, cur) => `<option value="${esc(v)}"${String(v) === String(cur) ? ' selected' : ''}>${esc(l)}</option>`;
+  sheet({
+    render: () => `${head('Filtres de la carte')}<div class="modal-body">
+      ${lbl('Espèce')}<select class="custom-select" data-mf="poisson">${opt('', 'Toutes les espèces', f.poisson)}${alpha('poisson').map(v => opt(v, v, f.poisson)).join('')}</select>
+      ${lbl('Année')}<select class="custom-select" data-mf="year">${opt('', 'Toutes les années', f.year)}${years(db.catches).map(v => opt(v, v, f.year)).join('')}</select>
+      ${lbl('Période')}<select class="custom-select" data-mf="period">${[['', 'Tout'], ['30', '30 derniers jours'], ['90', '3 derniers mois'], ['365', '12 derniers mois']].map(([v, l]) => opt(v, l, f.period)).join('')}</select>
+      ${lbl('Session')}<select class="custom-select" data-mf="session">${opt('', 'Toutes les sessions', f.session)}${sorted('sessions').map(s => opt(s.id, `${fmtD(s.date, D_SHORT)} · ${s.spot || 'Session'}${s.track?.length > 1 ? ' · tracé' : ''}`, f.session)).join('')}</select>
+      </div><div class="modal-footer"><button type="button" class="btn btn-light btn-lg" data-act="clear">Tout effacer</button><button type="button" class="btn btn-primary btn-lg" data-act="save">Appliquer</button></div>`,
+    on: {
+      clear: (t, api) => { f.poisson = f.year = f.period = f.session = ''; f.view = null; api.close(); render(); },
+      save: (t, api) => { $$('[data-mf]', api.el).forEach(s => { f[s.dataset.mf] = s.value; }); f.view = null; api.close(); render(); },
+    },
+  });
+}
+const daysAgo = n => { const d = new Date(); d.setDate(d.getDate() - n); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+function mapCatches() {
+  const f = ui.map, since = f.period ? daysAgo(+f.period) : '';
+  return db.catches.filter(c => (!f.poisson || c.poisson === f.poisson) && (!f.year || c.date.startsWith(f.year)) && (!since || c.date >= since) && (!f.session || c.sessionId === f.session));
+}
+function mapSessions() {
+  const f = ui.map, since = f.period ? daysAgo(+f.period) : '';
+  return db.sessions.filter(s => (!f.year || s.date.startsWith(f.year)) && (!since || s.date >= since) && (!f.session || s.id === f.session));
+}
+const trackPopup = s => `<div class="font-weight-bold text-gray-800">${esc(s.spot || 'Session')}</div><div class="text-gray-600">${fmtD(s.date, D_SHORT)} · ${s.debut}${s.fin ? '–' + s.fin : ''}</div>
+  <div>Tracé : ${fmtDist(trackLen(s.track))} · ${s.pris} pris</div><div class="mt-2"><a class="btn btn-sm btn-primary" href="#/session/${s.id}">Voir la session</a></div>`;
+
+function viewCarte() {
+  const f = ui.map, cs = mapCatches(), m = counts('spot');
+  const onMap = cs.filter(c => catchPos(c)), todo = [...m.keys()].filter(n => !db.spots[n]).length;
+  const nf_ = [f.poisson, f.year, f.period, f.session].filter(Boolean).length;
+  const sess = f.session && db.sessions.find(s => s.id === f.session);
+  return `${pageHeading('Carte des prises', `${sum(onMap, c => c.nbre)} poisson${sum(onMap, c => c.nbre) > 1 ? 's' : ''} sur la carte · ${cs.length - onMap.length} ligne${cs.length - onMap.length > 1 ? 's' : ''} sans position${sess ? ` · session du ${fmtD(sess.date, D_SHORT)}` : ''}`,
+      `<div class="d-flex flex-wrap" style="gap:.5rem"><button type="button" class="btn btn-sm ${nf_ ? 'btn-primary' : 'btn-light'} shadow-sm" data-cmd="map-filters">${fa('filter', 'fa-sm mr-1')}Filtres${nf_ ? ` (${nf_})` : ''}</button>
+       <button type="button" class="btn btn-sm ${todo ? 'btn-warning' : 'btn-light'} shadow-sm" data-cmd="spots">${fa('map-marker-alt', 'fa-sm mr-1')}Spots${todo ? ` · ${todo} à placer` : ''}</button></div>`)}
+    <div class="card shadow mb-2 overflow-hidden"><div id="bigmap" class="big-map"></div></div>
+    <div class="map-legend small text-gray-600 mb-4"><span><span class="mk-catch d-inline-block"></span> Prise (GPS)</span><span><span class="mk-catch approx d-inline-block"></span> Prise (position du spot)</span>
+      <span class="text-success">${fa('map-marker-alt')} Spot</span><span><span class="lg-line" style="background:#f6c23e"></span> Tracé</span><span><span class="mk-me d-inline-block" style="width:12px;height:12px"></span> Toi</span></div>`;
+}
+function initCarte() {
+  const el = $('#bigmap'); if (!el || !window.L) return;
+  const f = ui.map;
+  const { map, bases } = newMap(el);
+  const bounds = [];
+  const cluster = L.markerClusterGroup({
+    showCoverageOnHover: false, maxClusterRadius: 45, spiderfyOnMaxZoom: true,
+    iconCreateFunction: cl => { const n = cl.getChildCount(), s = n < 10 ? 34 : n < 100 ? 40 : 48; return L.divIcon({ className: '', html: `<div class="cl" style="width:${s}px;height:${s}px">${n}</div>`, iconSize: [s, s] }); },
+  });
+  const heatPts = new Map();
+  for (const c of mapCatches()) {
+    const p = catchPos(c); if (!p) continue;
+    cluster.addLayer(L.marker(p, { icon: icCatch(c.lat == null) }).bindPopup(catchPopup(c)));
+    const k = p.join(','); heatPts.set(k, (heatPts.get(k) || 0) + c.nbre); bounds.push(p);
+  }
+  const hmax = Math.max(1, ...heatPts.values());
+  const heat = L.heatLayer([...heatPts].map(([k, v]) => [...k.split(',').map(Number), Math.max(0.2, v / hmax)]), { radius: 30, blur: 24, maxZoom: 15, max: 1 });
+  const spots = L.layerGroup(), spotMarkers = {};
+  const sess = f.session && db.sessions.find(s => s.id === f.session);
+  for (const n of Object.keys(db.spots)) {
+    if (sess && n !== sess.spot) continue;
+    spotMarkers[n] = L.marker(spotPos(n), { icon: icSpot(), zIndexOffset: -100 }).bindPopup(() => spotPopup(n)).addTo(spots);
+    if (sess) bounds.push(spotPos(n));
+  }
+  const tracks = L.layerGroup();
+  for (const s of mapSessions()) {
+    if (!(s.track?.length > 1) || s.id === db.live) continue;
+    const ll = trackLL(s.track);
+    L.polyline(ll, { color: '#f6c23e', weight: 5, opacity: .9 }).bindPopup(trackPopup(s)).addTo(tracks);
+    L.marker(ll[0], { icon: icDot('#1cc88a'), interactive: false }).addTo(tracks);
+    L.marker(ll[ll.length - 1], { icon: icDot('#e74a3b'), interactive: false }).addTo(tracks);
+    bounds.push(...ll);
+  }
+  const overlays = { Prises: cluster, 'Carte de chaleur': heat, Spots: spots, 'Tracés GPS': tracks };
+  for (const [k, lay] of Object.entries(overlays)) if (f.layers[k]) lay.addTo(map);
+  L.control.layers(bases, overlays, { position: 'topright' }).addTo(map);
+  map.on('overlayadd', e => { f.layers[e.name] = true; });
+  map.on('overlayremove', e => { f.layers[e.name] = false; });
+  L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
+
+  // Bouton « me suivre »
+  let locBtn;
+  const Loc = L.Control.extend({
+    options: { position: 'topleft' },
+    onAdd() {
+      const d = L.DomUtil.create('div', 'leaflet-bar map-ctl');
+      d.innerHTML = `<a href="#" role="button" title="Me suivre" aria-label="Me suivre" class="${f.follow ? 'on' : ''}">${fa('location-arrow')}</a>`;
+      locBtn = d.firstChild;
+      L.DomEvent.disableClickPropagation(d);
+      L.DomEvent.on(locBtn, 'click', e => {
+        L.DomEvent.preventDefault(e); f.follow = !f.follow; locBtn.classList.toggle('on', f.follow);
+        if (f.follow) { if (gps.pos) map.setView([gps.pos.lat, gps.pos.lng], Math.max(map.getZoom(), 17)); else toast(gps.err || 'Recherche de ta position…'); }
+      });
+      return d;
+    },
+  });
+  new Loc().addTo(map);
+  map.on('dragstart', () => { if (f.follow) { f.follow = false; locBtn?.classList.remove('on'); } });
+
+  // Position en direct + tracé de la session en cours
+  let me = null, accC = null, liveLine = null;
+  const onGps = p => {
+    const s = liveSession();
+    if (s?.track?.length > 1) { if (!liveLine) liveLine = L.polyline(trackLL(s.track), { color: '#1cc88a', weight: 5 }).addTo(map); else liveLine.setLatLngs(trackLL(s.track)); }
+    if (!p) return;
+    const ll = [p.lat, p.lng];
+    if (!me) { accC = L.circle(ll, { radius: p.acc, color: '#2e6bff', weight: 1, fillOpacity: .12, interactive: false }).addTo(map); me = L.marker(ll, { icon: icMe(), zIndexOffset: 1000, interactive: false }).addTo(map); }
+    else { me.setLatLng(ll); accC.setLatLng(ll).setRadius(p.acc); }
+    if (f.follow) map.panTo(ll);
+  };
+  gps.subs.add(onGps); cleanups.push(() => gps.subs.delete(onGps)); onGps(gps.pos);
+
+  if (f.focus && spotMarkers[f.focus]) { map.setView(spotPos(f.focus), 17); setTimeout(() => spotMarkers[f.focus]?.openPopup(), 300); f.focus = ''; }
+  else if (f.view) map.setView(f.view.c, f.view.z);
+  else if (bounds.length) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 16 });
+  else map.setView(gps.pos ? [gps.pos.lat, gps.pos.lng] : DEFAULT_C, gps.pos ? 15 : 11);
+  map.on('moveend', () => { try { f.view = { c: map.getCenter(), z: map.getZoom() }; } catch (e) { /* carte retirée */ } });
+}
+function initMiniMap(id, { spot, catches = [], sessions = [] }) {
+  const el = document.getElementById(id); if (!el || !window.L) return;
+  const { map, bases } = newMap(el, { scrollWheelZoom: false });
+  L.control.layers(bases, null, { position: 'topright' }).addTo(map);
+  const b = [], sp = spotPos(spot);
+  if (sp) { L.marker(sp, { icon: icSpot() }).bindPopup(() => spotPopup(spot)).addTo(map); b.push(sp); }
+  for (const s of sessions) if (s.track?.length > 1) {
+    const ll = trackLL(s.track);
+    L.polyline(ll, { color: s.id === db.live ? '#1cc88a' : '#f6c23e', weight: 5 }).bindPopup(trackPopup(s)).addTo(map);
+    L.marker(ll[0], { icon: icDot('#1cc88a'), interactive: false }).addTo(map);
+    b.push(...ll);
+  }
+  const cl = L.markerClusterGroup({ showCoverageOnHover: false, maxClusterRadius: 30, iconCreateFunction: g => L.divIcon({ className: '', html: `<div class="cl" style="width:32px;height:32px">${g.getChildCount()}</div>`, iconSize: [32, 32] }) });
+  for (const c of catches) { const p = catchPos(c); if (!p) continue; cl.addLayer(L.marker(p, { icon: icCatch(c.lat == null) }).bindPopup(catchPopup(c))); b.push(p); }
+  cl.addTo(map);
+  if (b.length > 1) map.fitBounds(b, { padding: [30, 30], maxZoom: 17 }); else map.setView(b[0] || DEFAULT_C, b.length ? 17 : 11);
+}
+
+function viewSpot(name) {
+  const m = counts('spot');
+  if (!m.has(name) && !db.spots[name]) return `${pageHeading('Spot introuvable')}<a href="#/carte" class="btn btn-light">${fa('arrow-left', 'mr-1')} Carte</a>`;
+  const st = spotStats(name), pos = spotPos(name), n = c => c.nbre;
+  const done = st.ss.filter(s => s.fin), h = sum(done, sDur) / 60, p = sum(done, s => s.pris);
+  const perHour = groupSum(st.cs, c => +c.time.slice(0, 2), n), hrs = [...perHour.keys()];
+  const hourItems = []; if (hrs.length) for (let x = Math.min(6, ...hrs); x <= Math.max(21, ...hrs); x++) hourItems.push({ l: x + 'h', t: `De ${x} h à ${x + 1} h`, v: perHour.get(x) || 0 });
+  const sized = st.cs.filter(c => c.taille);
+  const withMax = (mm, key) => top(mm, 8).map(i => { const mx = Math.max(0, ...sized.filter(c => c[key] === i.l).map(c => c.taille)); return { ...i, sub: mx ? `max ${mx} cm` : '' }; });
+  if (pos) afterRender.push(() => initMiniMap('spotmap', { spot: name, catches: st.cs.filter(c => c.lat != null), sessions: st.ss }));
+  const lastSess = [...st.ss].sort(byRecent).slice(0, 6), lastCatches = [...st.cs].sort(byRecent).slice(0, 10);
+  return `<a href="#/carte" class="btn btn-link px-0 mb-2">${fa('arrow-left', 'mr-1')} Carte</a>
+    ${pageHeading(esc(name), esc([st.riv, st.commune].filter(Boolean).join(' · ')) || 'Spot',
+      `<div class="d-flex flex-wrap" style="gap:.5rem"><button type="button" class="btn btn-sm ${pos ? 'btn-light' : 'btn-success'} shadow-sm" data-cmd="place-spot" data-name="${esc(name)}">${fa('crosshairs', 'fa-sm mr-1')}${pos ? 'Déplacer' : 'Placer sur la carte'}</button>
+       ${pos ? `<button type="button" class="btn btn-sm btn-primary shadow-sm" data-cmd="spot-on-map" data-name="${esc(name)}">${fa('map', 'fa-sm mr-1')}Voir sur la carte</button>` : ''}</div>`)}
+    <div class="row">
+      ${kpi('Poissons', nf(st.fish), 'fish', 'primary', `${st.cs.length} ligne${st.cs.length > 1 ? 's' : ''} au journal`)}
+      ${kpi('Record', st.big ? unitV(st.big.taille, 'cm') : '–', 'trophy', 'warning', st.big ? `${esc(st.big.poisson)} · ${fmtD(st.big.date, D_SHORT)}` : '')}
+      ${kpi('Sessions', st.ss.length, 'stopwatch', 'success', h ? `${fmtDur(h * 60)} au total` : '')}
+      ${kpi('Rendement', h ? unitV(nf(p / h, 2), '/h') : '–', 'tachometer-alt', 'info', done.length ? `${Math.round(100 * done.filter(s => !s.pris).length / done.length)} % de bredouilles` : '')}
+    </div>
+    <div class="row">
+      <div class="col-lg-6">${card('Emplacement', pos ? '<div id="spotmap" class="mini-map"></div>' : `<p class="text-gray-600">Ce spot n’est pas encore placé sur la carte.</p><button type="button" class="btn btn-success" data-cmd="place-spot" data-name="${esc(name)}">${fa('crosshairs', 'mr-1')}Placer le spot</button>`)}</div>
+      <div class="col-lg-6">${card('Espèces prises ici', bars(withMax(groupSum(st.cs, c => c.poisson, n), 'poisson')))}</div>
+      <div class="col-lg-6">${card('Appâts et leurres qui marchent ici', bars(withMax(groupSum(st.cs, c => c.leurre, n), 'leurre')))}</div>
+      <div class="col-lg-6">${card('Heures de prise', hourItems.length ? chartBox({ labels: hourItems.map(i => i.l), titles: hourItems.map(i => i.t), data: hourItems.map(i => i.v) }) : '<p class="text-gray-500 mb-0">Pas de données.</p>')}</div>
+    </div>
+    ${lastSess.length ? `<h2 class="h5 text-gray-800 mb-3">Dernières sessions ici</h2><div class="row">${lastSess.map(sessionCard).join('')}</div>` : ''}
+    <div class="card shadow mb-4"><div class="card-header py-3"><h6 class="m-0 font-weight-bold text-primary">Dernières prises ici</h6></div>
+      ${lastCatches.length ? `<div class="list-group list-group-flush">${lastCatches.map(c => catchItem(c, true)).join('')}</div>` : '<div class="card-body text-gray-500">Aucune prise.</div>'}</div>`;
+}
+
 /* ---------------- Graphiques Chart.js (style du template) ---------------- */
 let charts = [], pending = [], dt = null;
 if (window.Chart) {
@@ -477,7 +851,8 @@ function drawCharts() {
 const doughnutLegend = items => `<div class="mt-3 text-center legend-line">${items.map((i, k) => `<span><i class="fas fa-circle mr-1" style="color:${PALETTE[k]}" aria-hidden="true"></i>${esc(i.l)} <b class="text-gray-700">${nf(i.v)}</b></span>`).join('')}</div>`;
 
 /* ---------------- Vues ---------------- */
-const ui = { prises: { year: '', poisson: '', riviere: '', technique: '', q: '', page: 0, order: [[0, 'desc']] }, sessions: { year: '', cible: '' }, stats: { year: '', poisson: '', cible: '' }, listField: 'spot' };
+const ui = { prises: { year: '', poisson: '', riviere: '', technique: '', q: '', page: 0, order: [[0, 'desc']] }, sessions: { year: '', cible: '' }, stats: { year: '', poisson: '', cible: '' }, listField: 'spot',
+  map: { base: 'Satellite', layers: { Prises: true, 'Carte de chaleur': false, Spots: true, 'Tracés GPS': true }, follow: false, view: null, poisson: '', year: '', period: '', session: '', focus: '' } };
 
 function viewHome() {
   const live = liveSession(), cs = sorted('catches');
@@ -494,7 +869,7 @@ function viewHome() {
     hero = `<div class="card border-left-success shadow mb-4"><div class="card-body">
       <div class="d-flex justify-content-between align-items-start flex-wrap" style="gap:.5rem">
         <div style="min-width:0"><div class="text-xs font-weight-bold text-success text-uppercase mb-1">${fa('circle', 'pulse mr-1')} Session en cours · depuis ${live.debut}</div>
-          <div class="h4 font-weight-bold text-gray-800 mb-1">${esc(live.spot || 'Session')}</div>${sessMeta(live)}</div>
+          <div class="h4 font-weight-bold text-gray-800 mb-1">${esc(live.spot || 'Session')}</div>${sessMeta(live)}<div class="small text-primary font-weight-bold mt-1" data-gps>${gpsLine(live)}</div></div>
         <div class="timer" data-timer>${fmtDur(sDur(live))}</div></div>
       <div class="row mx-n1 my-3">${cnt('pris', 'Pris', 'success', 'new-catch')}${cnt('rates', 'Ratés', 'warning')}${cnt('leurresPerdus', 'Perdus', 'danger')}</div>
       <div class="row"><div class="col-md-8 mb-2"><button type="button" class="btn btn-primary btn-lg btn-block" data-cmd="new-catch">${fa('plus', 'mr-2')}Nouvelle prise</button></div>
@@ -606,10 +981,13 @@ function viewSession(id) {
   if (!s) return `${pageHeading('Session introuvable')}<a href="#/sessions" class="btn btn-light">${fa('arrow-left', 'mr-1')} Sessions</a>`;
   const cs = sorted('catches').filter(c => c.sessionId === id).reverse();
   const live = db.live === id, d = sDur(s);
+  const hasMap = s.track?.length > 1 || cs.some(c => catchPos(c)) || !!spotPos(s.spot);
+  if (hasMap) afterRender.push(() => initMiniMap('sessmap', { spot: s.spot, catches: cs, sessions: [s] }));
   const fact = (l, v, icon) => `<div class="col-6 col-md-3 mb-3"><div class="text-xs font-weight-bold text-primary text-uppercase mb-1">${fa(icon, 'mr-1 text-gray-300')}${l}</div><div class="font-weight-bold text-gray-800">${v || '—'}</div></div>`;
   return `<a href="#/sessions" class="btn btn-link px-0 mb-2">${fa('arrow-left', 'mr-1')} Sessions</a>
     ${pageHeading(esc(s.spot || 'Session'), fmtD(s.date, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) + (live ? ' · <span class="text-success font-weight-bold">en cours</span>' : ''),
       `<div class="d-flex flex-wrap" style="gap:.5rem"><button type="button" class="btn btn-sm btn-primary shadow-sm" data-cmd="session-catch" data-id="${id}">${fa('plus', 'fa-sm text-white-50 mr-1')} Prise</button>
+       ${s.spot ? `<a class="btn btn-sm btn-light shadow-sm" href="${spotHref(s.spot)}">${fa('map-marker-alt', 'fa-sm mr-1')} Fiche du spot</a>` : ''}
        <button type="button" class="btn btn-sm btn-light shadow-sm" data-cmd="edit-session" data-id="${id}">${fa('pen', 'fa-sm mr-1')} Modifier</button>${live ? `<button type="button" class="btn btn-sm btn-success shadow-sm" data-cmd="end-session">${fa('flag-checkered', 'fa-sm mr-1')} Terminer</button>` : ''}</div>`)}
     <div class="row">
       ${kpi('Poissons pris', s.pris, 'fish', 'success')}${kpi('Poissons ratés', s.rates, 'times-circle', 'warning')}
@@ -620,6 +998,7 @@ function viewSession(id) {
       ${fact('Département', esc(s.departement), 'map')}${fact('Poisson recherché', esc(s.cible), 'bullseye')}${fact('Météo', s.meteo ? meteoIc(s.meteo) + ' ' + esc(s.meteo) : '', 'cloud-sun')}${fact('Vent', s.vent === 'Sans' ? 'Sans vent' : esc(s.vent), 'wind')}
       ${fact('T° air', s.tAir != null ? s.tAir + ' °C' : '', 'thermometer-half')}${fact('T° eau', s.tEau != null ? s.tEau + ' °C' : '', 'tint')}</div>
       ${s.note ? `<div class="border-top pt-3" style="white-space:pre-wrap">${esc(s.note)}</div>` : ''}`)}
+    ${hasMap ? card('Carte de la session', '<div id="sessmap" class="mini-map"></div>', s.track?.length > 1 ? `<span class="small text-gray-600">${fa('route', 'mr-1')}Tracé ${fmtDist(trackLen(s.track))}</span>` : '') : ''}
     <div class="card shadow mb-4"><div class="card-header py-3 d-flex justify-content-between"><h6 class="m-0 font-weight-bold text-primary">Prises détaillées</h6><span class="small text-gray-500">${cs.length} ligne${cs.length > 1 ? 's' : ''}</span></div>
     ${cs.length ? `<div class="list-group list-group-flush">${cs.map(c => catchItem(c)).join('')}</div>` : `<div class="card-body text-gray-500">Aucune prise détaillée rattachée à cette session${s.pris ? ` (${s.pris} notée${s.pris > 1 ? 's' : ''} au bilan)` : ''}.</div>`}</div>`;
 }
@@ -734,7 +1113,7 @@ function renderShell(tab) {
     <hr class="sidebar-divider"><div class="sidebar-heading">Journal</div>
     ${item('prises', '#/prises', 'fish', 'Prises')}${item('sessions', '#/sessions', 'stopwatch', 'Sessions')}
     <hr class="sidebar-divider"><div class="sidebar-heading">Analyse</div>
-    ${item('stats', '#/stats', 'chart-bar', 'Statistiques')}
+    ${item('stats', '#/stats', 'chart-bar', 'Statistiques')}${item('carte', '#/carte', 'map-marked-alt', 'Carte')}
     <hr class="sidebar-divider"><div class="sidebar-heading">Outils</div>
     ${item('reglages', '#/reglages', 'cog', 'Réglages')}
     <hr class="sidebar-divider d-none d-md-block">
@@ -757,22 +1136,27 @@ function renderShell(tab) {
     </ul>`;
 
   const mi = (t, href, icon, label) => `<a href="${href}" class="${tab === t ? 'active' : ''}">${fa(icon)}<span>${label}</span></a>`;
-  $('#mobile-nav').innerHTML = `${mi('home', '#/', 'tachometer-alt', 'Accueil')}${mi('prises', '#/prises', 'fish', 'Prises')}
+  $('#mobile-nav').innerHTML = `${mi('home', '#/', 'tachometer-alt', 'Accueil')}${mi('prises', '#/prises', 'fish', 'Prises')}${mi('sessions', '#/sessions', 'stopwatch', 'Sessions')}
     <button type="button" class="add${live ? ' live' : ''}" data-cmd="add" aria-label="${live ? 'Nouvelle prise' : 'Ajouter'}">${fa('plus')}</button>
-    ${mi('sessions', '#/sessions', 'stopwatch', 'Sessions')}${mi('stats', '#/stats', 'chart-bar', 'Stats')}`;
+    ${mi('carte', '#/carte', 'map-marked-alt', 'Carte')}${mi('stats', '#/stats', 'chart-bar', 'Stats')}`;
 }
 
 /* ---------------- Rendu et navigation ---------------- */
 let lastRoute = null;
 function render() {
   const h = location.hash.replace(/^#\/?/, ''), [page, arg] = h.split('/');
-  const tab = { '': 'home', prises: 'prises', sessions: 'sessions', session: 'sessions', stats: 'stats', reglages: 'reglages' }[page] || 'home';
+  const tab = { '': 'home', prises: 'prises', sessions: 'sessions', session: 'sessions', stats: 'stats', reglages: 'reglages', carte: 'carte', spot: 'carte' }[page] || 'home';
+  cleanups.forEach(fn => fn()); cleanups = [];
+  liveMaps.forEach(m => m.remove()); liveMaps = []; afterRender = [];
   if (dt) { dt.destroy(); dt = null; }
   renderShell(tab);
   pending = [];
-  $('#view').innerHTML = page === 'prises' ? viewPrises() : page === 'sessions' ? viewSessions() : page === 'session' ? viewSession(arg) : page === 'stats' ? viewStats() : page === 'reglages' ? viewSettings() : viewHome();
+  $('#view').innerHTML = page === 'prises' ? viewPrises() : page === 'sessions' ? viewSessions() : page === 'session' ? viewSession(arg) : page === 'stats' ? viewStats() : page === 'reglages' ? viewSettings() : page === 'carte' ? viewCarte() : page === 'spot' ? viewSpot(decodeURIComponent(arg || '')) : viewHome();
   drawCharts();
+  afterRender.forEach(fn => fn()); afterRender = [];
   if (page === 'prises') initTable();
+  if (page === 'carte') initCarte();
+  syncGps();
   if (lastRoute !== h) { scrollTo(0, 0); lastRoute = h; }
 }
 addEventListener('hashchange', render);
@@ -789,8 +1173,8 @@ function download(name, text, type) {
 function csv(kind) {
   const fr = d => d.split('-').reverse().join('/'), q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const rows = kind === 'catches'
-    ? [['Année', 'Date', 'Heure', 'Rivière', 'Spot', 'Poisson', 'Nbre', 'Taille', 'Relâché/Prélevé', 'Technique', 'Équipement', 'Appât/Leurre', 'Note'],
-      ...sorted('catches').reverse().map(c => [c.date.slice(0, 4), fr(c.date), c.time, c.riviere, c.spot, c.poisson, c.nbre, c.taille, c.sort, c.technique, c.equipement, c.leurre, c.note])]
+    ? [['Année', 'Date', 'Heure', 'Rivière', 'Spot', 'Poisson', 'Nbre', 'Taille', 'Relâché/Prélevé', 'Technique', 'Équipement', 'Appât/Leurre', 'Note', 'Latitude', 'Longitude'],
+      ...sorted('catches').reverse().map(c => [c.date.slice(0, 4), fr(c.date), c.time, c.riviere, c.spot, c.poisson, c.nbre, c.taille, c.sort, c.technique, c.equipement, c.leurre, c.note, ...(catchPos(c) || ['', ''])])]
     : [['Date', 'Début', 'Fin', 'Durée', 'Département', 'Commune', 'Spot', "Cours d'eau", 'T° air', 'T° eau', 'Météo', 'Vent', 'Poisson recherché', 'Poissons pris', 'Poissons ratés', 'Leurres perdus', 'Note'],
       ...sorted('sessions').reverse().map(s => { const d = sDur(s); return [fr(s.date), s.debut, s.fin, s.fin ? pad(Math.floor(d / 60)) + ':' + pad(d % 60) : '', s.departement, s.commune, s.spot, s.coursEau, s.tAir, s.tEau, s.meteo, s.vent, s.cible, s.pris, s.rates, s.leurresPerdus, s.note]; })];
   download(`peche-${kind === 'catches' ? 'prises' : 'sessions'}-${today()}.csv`, '﻿' + rows.map(r => r.map(q).join(';')).join('\r\n'), 'text/csv;charset=utf-8');
@@ -807,13 +1191,18 @@ const CMD = {
   'edit-session': t => { const s = db.sessions.find(x => x.id === t.dataset.id); if (s) sessionSheet(s, 'edit'); },
   'session-catch': t => { const s = db.sessions.find(x => x.id === t.dataset.id); catchSheet(null, { sessionId: s.id, time: db.live === s.id ? nowHM() : s.debut }); },
   'live-inc': t => { const s = liveSession(); if (!s) return; s[t.dataset.key] = Math.max(0, (s[t.dataset.key] || 0) + +t.dataset.d); save(); render(); },
+  'map-filters': () => mapFilters(),
+  spots: () => spotsSheet(),
+  'place-spot': t => placeSpot(t.dataset.name),
+  'spot-on-map': t => { ui.map.focus = t.dataset.name; ui.map.view = null; location.hash = '#/carte'; },
   'export-json': () => download(`peche-sauvegarde-${today()}.json`, JSON.stringify(db), 'application/json'),
   'export-csv': t => csv(t.dataset.val),
-  reset: () => { if (confirm('Remplacer toutes les données de cet appareil par la base d’origine ?\nLes saisies faites depuis seront perdues (pense à exporter une sauvegarde avant).')) { db = freshDb(); save(); render(); toast('Base d’origine restaurée'); } },
+  reset: () => { if (confirm('Remplacer toutes les données de cet appareil par la base d’origine ?\nLes saisies faites depuis seront perdues (pense à exporter une sauvegarde avant). Les spots placés sur la carte sont conservés.')) { const sp = db.spots; db = freshDb(); db.spots = sp; save(); render(); toast('Base d’origine restaurée'); } },
   rename: t => {
     const old = t.dataset.val, v = (prompt(`Renommer « ${old} » en :`, old) || '').trim();
     if (!v || v === old) return;
     for (const [tb, f] of FIELDS[ui.listField].src) for (const o of db[tb]) if (o[f] === old) o[f] = v;
+    if (ui.listField === 'spot' && db.spots[old]) { if (!db.spots[v]) db.spots[v] = db.spots[old]; delete db.spots[old]; }
     save(); render(); toast('Valeur renommée partout');
   },
 };
@@ -839,7 +1228,7 @@ document.addEventListener('change', e => {
       const d = JSON.parse(txt);
       if (!Array.isArray(d.catches) || !Array.isArray(d.sessions)) throw new Error('format');
       if (!confirm(`Remplacer les données de cet appareil par cette sauvegarde ?\n${d.catches.length} lignes de prises · ${d.sessions.length} sessions`)) return;
-      db = { v: 1, catches: d.catches, sessions: d.sessions, live: d.live || null, settings: d.settings || {} };
+      db = { v: 1, catches: d.catches, sessions: d.sessions, live: d.live || null, settings: d.settings || {}, spots: d.spots || db.spots || {} };
       save(); render(); toast('Sauvegarde importée');
     }).catch(() => toast('Fichier de sauvegarde invalide'));
   }
